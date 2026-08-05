@@ -1,87 +1,72 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-/// <summary>
-/// Монеты: один "ролл" шанса, дающий N монет, где номинал каждой монеты
-/// выбирается взвешенным рандомом (медь/серебро/золото).
-/// Опыт: точечные записи без ротации типов — сколько и какого опыта
-/// может уронить конкретный враг, задаётся явно в инспекторе.
-/// </summary>
 public class LootSpawner : MonoBehaviour
 {
     [System.Serializable]
-    public class WeightedCoinEntry
+    public class WeightedLootEntry
     {
-        [Tooltip("id пула в LootPoolRegistry, например 'Coin_Small'")]
+        [Tooltip("ID пула в LootPoolRegistry, например 'Coin_Small', 'Coin_Large'")]
         public string poolId;
         [Min(0.01f)] public float weight = 1f;
     }
 
     [System.Serializable]
-    public class CoinDropConfig
+    public class WeightedDropConfig
     {
+        [Tooltip("Общий шанс на то, что заспавнится группа предметов с рандомизацией типа")]
         [Range(0f, 1f)] public float dropChance = 0.5f;
         public int minCount = 1;
         public int maxCount = 3;
-        public List<WeightedCoinEntry> denominations = new List<WeightedCoinEntry>();
+        [Tooltip("Список предметов, из которых выбирается один по весу для каждой единицы дропа")]
+        public List<WeightedLootEntry> entries = new List<WeightedLootEntry>();
     }
 
     [System.Serializable]
-    public class ExpDropEntry
+    public class DirectDropEntry
     {
-        [Tooltip("id пула в LootPoolRegistry, например 'Exp_Medium'")]
+        [Tooltip("ID пула в LootPoolRegistry, например 'Exp_Medium', 'HealthPotion'")]
         public string poolId;
         [Range(0f, 1f)] public float dropChance = 1f;
         public int minAmount = 1;
         public int maxAmount = 1;
     }
 
-    [Header("Coin Drops (взвешенный случайный выбор номинала)")]
-    [SerializeField] private CoinDropConfig _coinDrop = new CoinDropConfig();
+    [Header("Weighted Drops (Один ролл количества, тип выбирается по весу: монеты и т.д.)")]
+    [SerializeField] private WeightedDropConfig _weightedDrop = new WeightedDropConfig();
 
-    [Header("Exp Drops (точечно, без ротации типов)")]
-    [SerializeField] private List<ExpDropEntry> _expDrops = new List<ExpDropEntry>();
+    [Header("Direct Drops (Точечные предметы со своим шансом: опыт, зелья и т.д.)")]
+    [SerializeField] private List<DirectDropEntry> _directDrops = new List<DirectDropEntry>();
 
     [Header("Scatter Settings")]
     [SerializeField] private float _scatterRadius = 0.5f;
 
-    private Health _health;
+    // ВАЖНО: Мы убрали OnEnable/OnDisable с автоподпиской на Health.OnDied.
+    // Теперь ProcessDrop() вызывается явно из EnemyBase при смерти или из Health коробки.
 
-    private void Awake()
+    /// <summary>
+    /// Вызывает расчет и спавн всего лута. Должен вызываться контроллером при смерти объекта.
+    /// </summary>
+    public void ProcessDrop()
     {
-        _health = GetComponent<Health>();
+        ProcessWeightedDrop();
+        ProcessDirectDrops();
     }
 
-    private void OnEnable()
+    private void ProcessWeightedDrop()
     {
-        if (_health != null) _health.OnDied += ProcessDrop;
-    }
+        if (_weightedDrop.entries.Count == 0) return;
+        if (Random.value > _weightedDrop.dropChance) return;
 
-    private void OnDisable()
-    {
-        if (_health != null) _health.OnDied -= ProcessDrop;
-    }
-
-    private void ProcessDrop()
-    {
-        ProcessCoinDrop();
-        ProcessExpDrops();
-    }
-
-    private void ProcessCoinDrop()
-    {
-        if (_coinDrop.denominations.Count == 0) return;
-        if (Random.value > _coinDrop.dropChance) return;
-
-        int count = Random.Range(_coinDrop.minCount, _coinDrop.maxCount + 1);
+        int count = Random.Range(_weightedDrop.minCount, _weightedDrop.maxCount + 1);
         for (int i = 0; i < count; i++)
         {
-            string poolId = PickWeightedDenomination(_coinDrop.denominations);
+            string poolId = PickWeightedEntry(_weightedDrop.entries);
             SpawnItem(poolId);
         }
     }
 
-    private string PickWeightedDenomination(List<WeightedCoinEntry> entries)
+    private string PickWeightedEntry(List<WeightedLootEntry> entries)
     {
         float totalWeight = 0f;
         foreach (var entry in entries) totalWeight += entry.weight;
@@ -95,12 +80,12 @@ public class LootSpawner : MonoBehaviour
             if (roll <= cumulative) return entry.poolId;
         }
 
-        return entries[entries.Count - 1].poolId; // подстраховка от погрешности float
+        return entries[entries.Count - 1].poolId; // Подстраховка
     }
 
-    private void ProcessExpDrops()
+    private void ProcessDirectDrops()
     {
-        foreach (var drop in _expDrops)
+        foreach (var drop in _directDrops)
         {
             if (string.IsNullOrEmpty(drop.poolId)) continue;
             if (Random.value > drop.dropChance) continue;
@@ -121,7 +106,7 @@ public class LootSpawner : MonoBehaviour
             ? LootPoolRegistry.Instance.GetPool(poolId)
             : null;
 
-        if (pool == null) return; // предупреждение уже выведет сам реестр
+        if (pool == null) return;
 
         GameObject spawnedItem = pool.Get();
         if (spawnedItem == null) return;
